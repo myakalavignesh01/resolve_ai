@@ -146,14 +146,8 @@ with tab4:
         c2.metric("Resolved", len(df[df['status'] == "Resolved"]))
         c3.metric("High Priority", len(df[df['priority'] == "High"]))
         
-        st.bar_chart(df['issue'].value_counts())
+        st.bar_chart(df['issue'].value_counts())                        
         st.bar_chart(df['status'].value_counts())
     else:
         st.info("No data yet. Submit some complaints.")
 
-# Refresh Button
-if st.button("🔄 Refresh All Data"):
-    st.session_state.tickets = load_tickets()
-    st.rerun()
-
-st.caption("✅ Fixed Version | Auto Refresh Added")
