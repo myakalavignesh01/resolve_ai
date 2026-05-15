@@ -1,280 +1,162 @@
 import streamlit as st
 import pandas as pd
-import datetime, json, uuid
-
-# SAFE PDF IMPORT
-try:
-    import pdfplumber
-    PDF_AVAILABLE = True
-except:
-    PDF_AVAILABLE = False
-
+import datetime
+import uuid
+import sqlite3
+import os
+from dotenv import load_dotenv
 from textblob import TextBlob
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
-st.set_page_config(page_title="ResolveAI System", layout="wide")
+# Load environment variables
+load_dotenv()
 
-# ---------------- LOGIN ----------------
-USERS = {
-    "admin": {"pwd": "1234", "role": "admin"},
-    "student": {"pwd": "1111", "role": "user"}
-}
+st.set_page_config(page_title="ResolveAI Ultra", layout="wide", page_icon="🚀")
 
-if "login" not in st.session_state:
-    st.session_state.login = False
-    st.session_state.role = None
+# ===================== DATABASE =====================
+def init_db():
+    conn = sqlite3.connect("resolveai.db")
+    conn.execute('''CREATE TABLE IF NOT EXISTS tickets (
+                    ticket TEXT PRIMARY KEY,
+                    user TEXT,
+                    text TEXT,
+                    issue TEXT,
+                    priority TEXT,
+                    status TEXT,
+                    time TEXT,
+                    confidence REAL,
+                    rating INTEGER)''')
+    conn.commit()
+    conn.close()
 
-def login():
-    st.title("🔐 ResolveAI Secure Login")
-    u = st.text_input("Username")
-    p = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if u in USERS and USERS[u]["pwd"] == p:
-            st.session_state.login = True
-            st.session_state.role = USERS[u]["role"]
-            st.rerun()
-        else:
-            st.error("Invalid Credentials")
+def save_ticket(entry):
+    conn = sqlite3.connect("resolveai.db")
+    conn.execute("""INSERT OR REPLACE INTO tickets 
+                    (ticket, user, text, issue, priority, status, time, confidence, rating)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                 (entry["ticket"], entry["user"], entry["text"], entry["issue"],
+                  entry["priority"], entry["status"], entry["time"], 
+                  entry.get("confidence", 70), entry.get("rating")))
+    conn.commit()
+    conn.close()
 
-if not st.session_state.login:
-    login()
-    st.stop()
+def load_tickets():
+    conn = sqlite3.connect("resolveai.db")
+    df = pd.read_sql_query("SELECT * FROM tickets ORDER BY time DESC", conn)
+    conn.close()
+    return df
 
-# ---------------- STYLE ----------------
-st.markdown("""
-<style>
-body {background:#020617;color:white;}
-.card {
-    background:#0f172a;
-    padding:20px;
-    border-radius:15px;
-    margin:10px;
-    box-shadow:0 0 20px rgba(0,255,255,0.2);
-}
-</style>
-""", unsafe_allow_html=True)
+init_db()
 
-st.title("🚀 ResolveAI - Smart Grievance System")
-
-# ---------------- DATA ----------------
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-def save():
-    with open("data.json", "w") as f:
-        json.dump(st.session_state.history, f)
-
-def load():
-    try:
-        with open("data.json") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                st.session_state.history = [
-                    d for d in data if isinstance(d, dict)
-                ]
-            else:
-                st.session_state.history = []
-    except:
-        st.session_state.history = []
-
-load()
-
-# ---------------- AI ----------------
-def analyze(text):
-    if not text: return "General"
+# ===================== AI HELPERS =====================
+def analyze_issue(text):
     t = text.lower()
-    if "wifi" in t: return "Network"
-    elif "water" in t: return "Water"
-    elif "power" in t: return "Electric"
-    return "General"
+    if any(word in t for word in ["wifi", "internet", "network", "speed"]):
+        return "Network", "High", 88
+    elif any(word in t for word in ["power", "electric", "light", "fan"]):
+        return "Electrical", "High", 75
+    elif any(word in t for word in ["water", "leak", "tap"]):
+        return "Water", "Medium", 72
+    elif any(word in t for word in ["clean", "dirty", "room", "hostel"]):
+        return "Maintenance", "Medium", 65
+    return "General", "Medium", 60
 
-def priority(text):
-    try:
-        s = TextBlob(text).sentiment.polarity
-        if s < -0.5: return "High"
-        elif s < 0: return "Medium"
-        return "Low"
-    except:
-        return "Low"
+# ===================== SIDEBAR =====================
+st.sidebar.title("⚙️ Settings")
+language = st.sidebar.selectbox("Language", ["English", "Hindi"], index=0)
+st.sidebar.caption("ResolveAI Ultra v2.0")
 
-def advanced_score(text):
-    try:
-        score = 50
-        t = text.lower()
-        if "urgent" in t: score += 25
-        if "not working" in t: score += 15
-        if TextBlob(text).sentiment.polarity < -0.5: score += 20
-        return min(score, 100)
-    except:
-        return 50
+# ===================== MAIN APP =====================
+st.title("🚀 ResolveAI Ultra - Smart Grievance System")
 
-def duplicate(text):
-    try:
-        texts = []
-        for h in st.session_state.history:
-            if isinstance(h, dict) and "text" in h:
-                texts.append(str(h["text"]))
-        texts.append(str(text))
+tab1, tab2, tab3, tab4 = st.tabs(["Submit Complaint", "My Tickets", "Admin Panel", "Analytics"])
 
-        if len(texts) < 2:
-            return False
-
-        tfidf = TfidfVectorizer().fit_transform(texts)
-        sim = cosine_similarity(tfidf[-1], tfidf[:-1])
-        return sim.max() > 0.7
-    except:
-        return False
-
-# ---------------- SYSTEM ----------------
-def department(issue):
-    return {
-        "Network":"IT Dept",
-        "Water":"Maintenance",
-        "Electric":"Electrical",
-        "General":"Admin"
-    }.get(issue, "Admin")
-
-def assign_officer():
-    officers = ["A","B","C","D"]
-    return officers[len(st.session_state.history) % len(officers)]
-
-def delay(entry):
-    try:
-        t = datetime.datetime.strptime(entry.get("time",""), "%Y-%m-%d %H:%M")
-        return (datetime.datetime.now() - t).total_seconds() > 60
-    except:
-        return False
-
-def workflow(entry):
-    if not isinstance(entry, dict):
-        return
-
-    entry.setdefault("status", "Received")
-
-    if entry["status"] == "Received":
-        entry["status"] = "Assigned"
-    elif entry["status"] == "Assigned":
-        entry["status"] = "Processing"
-    elif entry["status"] == "Processing":
-        entry["status"] = "Verified"
-    elif entry["status"] == "Verified":
-        entry["status"] = "Closed"
-
-def escalate(entry):
-    if not isinstance(entry, dict):
-        return
-
-    entry.setdefault("status", "Received")
-
-    if delay(entry) and entry["status"] != "Closed":
-        entry["priority"] = "High"
-        entry["status"] = "Escalated"
-        entry["officer"] = "Senior Officer"
-
-# ---------------- TABS ----------------
-tab1, tab2, tab3 = st.tabs(["🧑 User", "🛠 Admin", "📊 Analytics"])
-
-# ---------------- USER ----------------
+# ------------------- TAB 1: SUBMIT -------------------
 with tab1:
-    user = st.text_input("User ID")
-    text = st.text_area("Enter Complaint")
-
-    file = st.file_uploader("Upload PDF")
-
-    if file:
-        if PDF_AVAILABLE:
-            try:
-                with pdfplumber.open(file) as pdf:
-                    text = ""
-                    for p in pdf.pages:
-                        pt = p.extract_text()
-                        if pt:
-                            text += pt
-            except:
-                st.error("PDF read error")
-        else:
-            st.warning("PDF feature not available")
-
-    if st.button("Submit Complaint"):
-        if text:
-            ticket = str(uuid.uuid4())[:8]
-            issue = analyze(text)
-
+    st.subheader("Submit New Grievance")
+    
+    user_id = st.text_input("Your Student ID / Roll Number", placeholder="BTECH20231234")
+    complaint = st.text_area("Describe your problem clearly", height=150)
+    
+    if st.button("Submit Complaint", type="primary", use_container_width=True):
+        if user_id and complaint:
+            issue, priority, confidence = analyze_issue(complaint)
+            
             entry = {
-                "ticket": ticket,
-                "user": user,
-                "text": text,
+                "ticket": str(uuid.uuid4())[:8].upper(),
+                "user": user_id,
+                "text": complaint,
                 "issue": issue,
-                "department": department(issue),
-                "officer": assign_officer(),
-                "priority": priority(text),
-                "score": advanced_score(text),
-                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "priority": priority,
                 "status": "Received",
-                "log": ["Created"]
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "confidence": confidence,
+                "rating": None
             }
+            
+            save_ticket(entry)
+            st.success(f"✅ Ticket Created Successfully! **Ticket ID: {entry['ticket']}**")
+            st.info(f"**Issue Detected:** {issue} | **Priority:** {priority} | **AI Confidence:** {confidence}%")
+            
+            # Simple AI Suggestion
+            st.write("**AI Suggested Actions:**")
+            suggestions = {
+                "Network": ["Restart router", "Check WiFi signal", "Clear cache"],
+                "Electrical": ["Check MCB", "Report to electrician"],
+                "Water": ["Check tank", "Report leak with photo"],
+                "Maintenance": ["Maintenance team will visit soon"],
+                "General": ["Forwarded to concerned department"]
+            }
+            for sug in suggestions.get(issue, ["Will be reviewed shortly"]):
+                st.write(f"• {sug}")
+        else:
+            st.error("Please enter both Student ID and Complaint")
 
-            st.session_state.history.append(entry)
-            save()
-
-            st.success(f"Ticket Created: {ticket}")
-
-            if duplicate(text):
-                st.warning("Duplicate Complaint Detected")
-
-# ---------------- ADMIN ----------------
+# ------------------- TAB 2: MY TICKETS -------------------
 with tab2:
-    st.subheader("Admin Panel")
+    st.subheader("📋 My Tickets")
+    user_id_input = st.text_input("Enter your Student ID to see your tickets", key="user_check")
+    
+    if user_id_input:
+        df = load_tickets()
+        my_df = df[df['user'] == user_id_input]
+        if not my_df.empty:
+            st.dataframe(my_df[["ticket", "issue", "status", "priority", "time"]], use_container_width=True)
+        else:
+            st.info("No tickets found for this ID.")
 
-    for i, h in enumerate(st.session_state.history):
-
-        if not isinstance(h, dict):
-            continue
-
-        h.setdefault("status", "Received")
-        h.setdefault("priority", "Low")
-        h.setdefault("ticket", f"UNK-{i}")
-        h.setdefault("officer", "Not Assigned")
-
-        workflow(h)
-        escalate(h)
-
-        st.write(f"🎫 {h['ticket']} | {h['status']} | {h['priority']} | {h['officer']}")
-
-        if st.session_state.role == "admin":
-            msg = st.text_input(f"Reply {h['ticket']}", key=f"msg_{i}")
-            if st.button(f"Send {h['ticket']}", key=f"btn_{i}"):
-                h["response"] = msg
-                h["log"].append("Responded")
-                save()
-                st.success("Response Sent")
-
-# ---------------- ANALYTICS ----------------
+# ------------------- TAB 3: ADMIN -------------------
 with tab3:
-    df = pd.DataFrame(st.session_state.history)
-
+    st.subheader("🛠 Admin Dashboard")
+    df = load_tickets()
     if not df.empty:
-        st.metric("Total", len(df))
-        st.metric("Closed", sum(df["status"] == "Closed"))
+        st.dataframe(df, use_container_width=True)
+        
+        ticket_to_update = st.selectbox("Select Ticket to Update", df["ticket"].tolist())
+        new_status = st.selectbox("New Status", ["Received", "In Progress", "Resolved", "Closed"])
+        
+        if st.button("Update Status"):
+            conn = sqlite3.connect("resolveai.db")
+            conn.execute("UPDATE tickets SET status = ? WHERE ticket = ?", (new_status, ticket_to_update))
+            conn.commit()
+            conn.close()
+            st.success("Status Updated!")
+            st.rerun()
+    else:
+        st.info("No tickets yet.")
 
-        st.line_chart(df["time"].value_counts())
-        st.bar_chart(df["priority"].value_counts())
-        st.bar_chart(df["department"].value_counts())
+# ------------------- TAB 4: ANALYTICS -------------------
+with tab4:
+    st.subheader("📊 Analytics")
+    df = load_tickets()
+    if not df.empty:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Tickets", len(df))
+        col2.metric("Resolved", len(df[df['status'] == "Resolved"]))
+        col3.metric("Avg Confidence", f"{df['confidence'].mean():.1f}%")
+        
+        st.bar_chart(df['issue'].value_counts())
+        st.bar_chart(df['status'].value_counts())
+    else:
+        st.info("No data available yet.")
 
-        st.download_button("Download CSV", df.to_csv(), "report.csv")
-
-# ---------------- SEARCH ----------------
-search = st.text_input("Search")
-
-for h in st.session_state.history:
-    if isinstance(h, dict) and "text" in h:
-        if search.lower() in h["text"].lower():
-            st.write(h)
-
-# ---------------- RESET ----------------
-if st.button("Clear All Data"):
-    st.session_state.history = []
-    save()
-
-st.caption("🏆 Ultimate AI Hackathon Project")
+st.caption("Made with ❤️ for Hackathon | ResolveAI Ultra")
