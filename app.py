@@ -3,9 +3,19 @@ import pandas as pd
 import datetime
 import uuid
 import sqlite3
-import os
+from openai import OpenAI
 
-st.set_page_config(page_title="ResolveAI Ultra", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="ResolveAI Agent", layout="wide", page_icon="🤖")
+
+# ===================== YOUR REAL GROK API KEY =====================
+XAI_API_KEY = "xai-XhJMsLwDP1JyOTQeUobPJLnhoL8VowKxEmHL92qQOe43cPAOU3EXWz73K2a8uPZAxDXSppMKFtYhjXX3"
+
+client = OpenAI(
+    api_key=XAI_API_KEY,
+    base_url="https://api.x.ai/v1"
+)
+
+st.sidebar.success("✅ Connected to Real Grok AI")
 
 # ===================== DATABASE =====================
 def init_db():
@@ -19,17 +29,18 @@ def init_db():
                     priority TEXT,
                     status TEXT,
                     time TEXT,
-                    confidence REAL)''')
+                    ai_solution TEXT,
+                    conversation TEXT)''')
     conn.commit()
     conn.close()
 
 def save_ticket(entry):
     conn = sqlite3.connect("resolveai.db")
     conn.execute("""INSERT OR REPLACE INTO tickets 
-                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
                  (entry["ticket"], entry["user"], entry["email"], entry["text"],
-                  entry["issue"], entry["priority"], entry["status"], 
-                  entry["time"], entry.get("confidence", 80)))
+                  entry["issue"], entry["priority"], entry["status"], entry["time"],
+                  entry.get("ai_solution",""), str(entry.get("conversation",[]))))
     conn.commit()
     conn.close()
 
@@ -41,116 +52,93 @@ def load_tickets():
 
 init_db()
 
+# ===================== REAL GROK AI AGENT =====================
+def call_grok_agent(prompt, history=[]):
+    messages = [{"role": "system", "content": """You are ResolveAI Agent, a smart, friendly, and proactive campus problem solver.
+    Solve real issues like WiFi, electricity, water, cleanliness, maintenance, etc. Give clear step-by-step solutions."""}]
+    
+    for msg in history:
+        messages.append(msg)
+    
+    messages.append({"role": "user", "content": prompt})
+
+    try:
+        response = client.chat.completions.create(
+            model="grok-4",           # Using latest model
+            messages=messages,
+            temperature=0.7,
+            max_tokens=700
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Error: {str(e)}"
+
 # ===================== MAIN APP =====================
-st.title("🚀 ResolveAI Ultra - Smart Grievance System")
+st.title("🤖 ResolveAI Agent - Real Grok AI Campus Solver")
 
-tab1, tab2, tab3, tab4 = st.tabs(["Submit Complaint", "My Tickets", "Admin Panel", "Analytics"])
+tab1, tab2, tab3 = st.tabs(["💬 Chat with Agent", "📋 My Tickets", "🛠 Admin"])
 
-# ---------------- TAB 1: SUBMIT ----------------
 with tab1:
-    st.subheader("Submit New Grievance")
+    st.subheader("Describe Your Problem")
     
     col1, col2 = st.columns(2)
     with col1:
-        user_id = st.text_input("Student ID / Roll Number*", placeholder="BTECH20231234")
+        user_id = st.text_input("Student ID *", key="u_id")
     with col2:
-        student_email = st.text_input("Student Email Address*", placeholder="student@college.edu")
+        email = st.text_input("Email *", key="u_email")
 
-    complaint = st.text_area("Describe your problem in detail*", height=180)
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    if st.button("Submit Complaint", type="primary", use_container_width=True):
-        if user_id and student_email and complaint:
-            
-            t = complaint.lower()
-            if "wifi" in t or "internet" in t:
-                issue = "Network"
-            elif "power" in t or "electric" in t:
-                issue = "Electrical"
-            elif "water" in t:
-                issue = "Water"
-            elif "clean" in t or "dirty" in t or "room" in t:
-                issue = "Maintenance"
-            else:
-                issue = "General"
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-            priority = "High" if any(word in t for word in ["urgent", "emergency", "broken"]) else "Medium"
+    if prompt := st.chat_input("Type your issue here..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
+        with st.chat_message("assistant"):
+            with st.spinner("Grok Agent is working..."):
+                response = call_grok_agent(prompt, st.session_state.messages[:-1])
+                st.markdown(response)
+        
+        st.session_state.messages.append({"role": "assistant", "content": response})
+
+        # Auto Save Ticket
+        if len(st.session_state.messages) <= 3 and user_id and email:
+            ticket_id = str(uuid.uuid4())[:8].upper()
             entry = {
-                "ticket": str(uuid.uuid4())[:8].upper(),
+                "ticket": ticket_id,
                 "user": user_id,
-                "email": student_email,
-                "text": complaint,
-                "issue": issue,
-                "priority": priority,
-                "status": "Received",
+                "email": email,
+                "text": prompt,
+                "issue": "AI Processed",
+                "priority": "Medium",
+                "status": "In Progress",
                 "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "confidence": 82
+                "ai_solution": response,
+                "conversation": st.session_state.messages
             }
-
             save_ticket(entry)
+            st.toast(f"Ticket Created: **{ticket_id}**", icon="✅")
 
-            st.success(f"✅ Ticket Created! **ID: {entry['ticket']}**")
-            st.info(f"Issue: {issue} | Priority: {priority}")
-
-            st.subheader("💡 AI Suggested Actions")
-            suggestions = {
-                "Network": ["Restart router", "Forget & reconnect WiFi", "Check signal strength"],
-                "Electrical": ["Check MCB switch", "Report to electrician"],
-                "Water": ["Check tank level", "Report leakage"],
-                "Maintenance": ["Maintenance team will visit"],
-                "General": ["Your complaint is under review"]
-            }
-            for s in suggestions.get(issue, ["Will be reviewed soon"]):
-                st.write(f"• {s}")
-
-            st.success(f"📧 Notification sent to: **{student_email}**")
-        else:
-            st.error("All fields are required!")
-
-# ---------------- TAB 2: MY TICKETS ----------------
 with tab2:
-    st.subheader("📋 My Tickets")
-    search_id = st.text_input("Enter Your Student ID")
-    if search_id:
+    st.subheader("My Tickets")
+    sid = st.text_input("Enter Student ID")
+    if sid:
         df = load_tickets()
-        my_df = df[df['user'] == search_id]
-        if not my_df.empty:
-            st.dataframe(my_df, use_container_width=True)
+        mine = df[df['user'] == sid]
+        if not mine.empty:
+            st.dataframe(mine[["ticket","issue","status","time"]], use_container_width=True)
         else:
             st.info("No tickets found.")
 
-# ---------------- TAB 3: ADMIN ----------------
 with tab3:
-    st.subheader("🛠 Admin Panel")
+    st.subheader("Admin Panel")
     df = load_tickets()
     if not df.empty:
         st.dataframe(df, use_container_width=True)
-        
-        ticket = st.selectbox("Select Ticket", df["ticket"].tolist())
-        new_status = st.selectbox("Update Status", ["Received", "In Progress", "Resolved", "Closed"])
-        
-        if st.button("Update Status"):
-            conn = sqlite3.connect("resolveai.db")
-            conn.execute("UPDATE tickets SET status=? WHERE ticket=?", (new_status, ticket))
-            conn.commit()
-            conn.close()
-            st.success("Status Updated!")
-            st.rerun()
-    else:
-        st.info("No tickets yet.")
 
-# ---------------- TAB 4: ANALYTICS ----------------
-with tab4:
-    st.subheader("📊 Analytics")
-    df = load_tickets()
-    if not df.empty:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Tickets", len(df))
-        c2.metric("Resolved", len(df[df['status'] == "Resolved"]))
-        c3.metric("High Priority", len(df[df['priority'] == "High"]))
-        
-        st.bar_chart(df['issue'].value_counts())
-    else:
-        st.info("No data yet.")
-
-st.caption("✅ Fully Working Version | Student Email Included")
+st.caption("Real Grok AI Agent Running | Your Key is Active")
